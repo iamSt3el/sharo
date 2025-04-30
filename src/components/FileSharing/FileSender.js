@@ -3,6 +3,9 @@ import webRTCService from '../../services/webrtc';
 import { formatFileSize, readFileChunk } from '../../utils/fileUtils';
 import { generateReadableRoomId } from '../../utils/idGenerator';
 import * as encryption from '../../services/encryption';
+import QRCodeDisplay from './QRCodeDisplay';
+// Make sure to import our stylesheet if it's separate
+// import './qrCodeStyles.css';
 
 const FileSender = () => {
   const [generatedId, setGeneratedId] = useState('');
@@ -251,6 +254,9 @@ const FileSender = () => {
             Copy
           </button>
         </div>
+        
+        {/* QR Code Display Component */}
+        <QRCodeDisplay roomId={generatedId} />
       </div>
       
       <div className="form-group mb-6">

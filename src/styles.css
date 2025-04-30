@@ -578,6 +578,51 @@
     padding-left: 1rem;
     padding-right: 1rem;
   }
+  /* QR Code component styles */
+.qr-code-container {
+    margin-top: 15px;
+    text-align: center;
+  }
+  
+  .qr-popup {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.5);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+  }
+  
+  .qr-popup-content {
+    background-color: #fff;
+    padding: 25px;
+    border-radius: 8px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+    max-width: 90%;
+    width: 300px;
+    text-align: center;
+  }
+  
+  .qr-image-container {
+    padding: 16px;
+    background-color: #f8f9fa;
+    border-radius: 8px;
+    display: inline-block;
+    border: 1px solid #e9ecef;
+  }
+  
+  .qr-loading {
+    padding: 20px;
+    background-color: #f8f9fa;
+    border-radius: 8px;
+    display: inline-block;
+  }
+  
+  /* Add this to your existing CSS file or create a new one */
   
   /* Media Queries for Responsiveness */
   @media (min-width: 640px) {

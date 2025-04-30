@@ -31,6 +31,26 @@ const FileReceiver = () => {
     webRTCService.on('onMessage', handleMessage);
     webRTCService.on('onRoomClosed', handleRoomClosed);
     
+    // Check for room ID in URL parameters (for QR code scanning)
+    const checkUrlParams = () => {
+      try {
+        const urlParams = new URLSearchParams(window.location.search);
+        const roomParam = urlParams.get('room');
+        
+        if (roomParam && validateRoomId(roomParam)) {
+          setRoomId(roomParam);
+          // Automatically connect if room ID is in URL
+          setTimeout(() => {
+            connectToRoom(roomParam);
+          }, 500);
+        }
+      } catch (error) {
+        console.error("Error parsing URL params:", error);
+      }
+    };
+    
+    checkUrlParams();
+    
     return () => {
       // Clean up WebRTC connection when component unmounts
       webRTCService.cleanup();
@@ -74,14 +94,16 @@ const FileReceiver = () => {
   };
   
   // Connect to the room
-  const connectToRoom = () => {
-    if (!roomId) {
+  const connectToRoom = (id = null) => {
+    const roomIdToUse = id || roomId;
+    
+    if (!roomIdToUse) {
       setStatus('Please enter a room code.');
       setStatusType('error');
       return;
     }
     
-    if (!validateRoomId(roomId)) {
+    if (!validateRoomId(roomIdToUse)) {
       setStatus('Invalid room code format.');
       setStatusType('error');
       return;
@@ -101,7 +123,12 @@ const FileReceiver = () => {
     setStatus('Connecting to room...');
     setStatusType('info');
     
-    webRTCService.initReceiver(roomId);
+    // If not already set, update the roomId state
+    if (!id && roomId !== roomIdToUse) {
+      setRoomId(roomIdToUse);
+    }
+    
+    webRTCService.initReceiver(roomIdToUse);
   };
   
   // Handle incoming messages from the data channel
@@ -218,7 +245,7 @@ const FileReceiver = () => {
           />
           <button 
             className="btn btn-success"
-            onClick={connectToRoom}
+            onClick={() => connectToRoom()}
             disabled={isConnected || isConnecting || !roomId}
           >
             {isConnecting ? 'Connecting...' : 'Connect'}

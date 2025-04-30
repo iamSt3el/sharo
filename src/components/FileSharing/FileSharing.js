@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import FileSender from './FileSender';
 import FileReceiver from './FileReceiver';
 
@@ -9,9 +9,37 @@ import FileReceiver from './FileReceiver';
 const FileSharing = () => {
   const [mode, setMode] = useState('choose'); // 'choose', 'send', 'receive'
 
+  useEffect(() => {
+    // Check if URL indicates a specific mode
+    const checkUrlForMode = () => {
+      try {
+        const path = window.location.pathname;
+        const urlParams = new URLSearchParams(window.location.search);
+        
+        // If path ends with /send, go to send mode
+        if (path.endsWith('/send')) {
+          setMode('send');
+          return;
+        }
+        
+        // If path ends with /receive or has room parameter, go to receive mode
+        if (path.endsWith('/receive') || urlParams.has('room')) {
+          setMode('receive');
+          return;
+        }
+      } catch (error) {
+        console.error("Error parsing URL:", error);
+      }
+    };
+    
+    checkUrlForMode();
+  }, []);
+
   // Reset to initial state
   const resetApp = () => {
     setMode('choose');
+    // Clear URL parameters without reloading the page
+    window.history.replaceState({}, document.title, window.location.pathname);
   };
 
   return (
@@ -58,7 +86,7 @@ const FileSharing = () => {
               <div className="steps">
                 <div className="step">
                   <div className="step-number">1</div>
-                  <p>Connect with a sharing code</p>
+                  <p>Connect with a sharing code or scan QR code</p>
                 </div>
                 <div className="step">
                   <div className="step-number">2</div>
@@ -116,7 +144,7 @@ const FileSharing = () => {
           {mode !== 'choose' && (
             <p className="mt-1">
               {mode === 'send' 
-                ? 'Waiting for the receiver to connect using your room code.' 
+                ? 'Waiting for the receiver to connect using your room code or QR code.' 
                 : 'Enter the room code provided by the sender to connect.'}
             </p>
           )}

@@ -12,7 +12,7 @@ class SignalingService {
   // Connect to the signaling server
   connect() {
     // Get server URL from environment
-    const SERVER_URL = process.env.REACT_APP_SERVER_URL || 'http://localhost:5000';
+    const SERVER_URL = process.env.REACT_APP_SERVER_URL || 'https://sharo-server.onrender.com/';
     
     // Create socket connection
     this.socket = io(SERVER_URL);
