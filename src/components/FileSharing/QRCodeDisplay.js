@@ -7,7 +7,6 @@ import React, { useEffect, useState } from 'react';
 const QRCodeDisplay = ({ roomId, size = 180 }) => {
   const [qrDataUrl, setQrDataUrl] = useState('');
   const [showQr, setShowQr] = useState(false);
-  const [serverStatus, setServerStatus] = useState(null);
   
   useEffect(() => {
     if (!roomId || !showQr) return;
@@ -15,25 +14,12 @@ const QRCodeDisplay = ({ roomId, size = 180 }) => {
     // Only load QRCode when component is mounted and showQr is true
     import('qrcode').then(QRCode => {
       try {
-        // Get server URL from environment variable or use default
-        // IMPORTANT: This must match your deployed server URL!
+        // CORRECT SERVER URL - your server is at sharo-server.onrender.com
         const SERVER_URL = process.env.REACT_APP_SERVER_URL || 'https://sharo-server.onrender.com';
         
         // Create a URL that points to the server's /receive endpoint
         const joinUrl = `${SERVER_URL}/receive?room=${roomId}`;
         console.log('Generated QR URL:', joinUrl);
-        
-        // Test if the server is reachable (for debugging purposes)
-        fetch(`${SERVER_URL}/api/status`)
-          .then(response => response.json())
-          .then(data => {
-            setServerStatus({ status: 'connected', data });
-            console.log('Server is reachable:', data);
-          })
-          .catch(err => {
-            setServerStatus({ status: 'error', error: err.message });
-            console.error('Server connection error:', err);
-          });
         
         // Generate QR code as data URL
         QRCode.toDataURL(joinUrl, {
@@ -91,14 +77,6 @@ const QRCodeDisplay = ({ roomId, size = 180 }) => {
               </div>
             ) : (
               <div className="qr-loading">Generating QR code...</div>
-            )}
-            
-            {serverStatus && serverStatus.status === 'error' && (
-              <div className="server-error mt-2">
-                <p className="text-red-500 text-sm">
-                  <strong>Warning:</strong> Server connection issue. QR code may not work properly.
-                </p>
-              </div>
             )}
             
             <div className="mt-4 mb-2">
