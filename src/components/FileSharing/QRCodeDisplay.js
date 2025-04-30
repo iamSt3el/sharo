@@ -1,41 +1,68 @@
 import React, { useEffect, useState } from 'react';
 
 /**
- * QR Code display component
- * Requires 'qrcode' library to be installed: npm install qrcode
+ * QR Code display component with improved URL handling
+ * for better compatibility across environments
  */
 const QRCodeDisplay = ({ roomId, size = 180 }) => {
   const [qrDataUrl, setQrDataUrl] = useState('');
   const [showQr, setShowQr] = useState(false);
+  const [shareUrl, setShareUrl] = useState('');
   
   useEffect(() => {
     if (!roomId) return;
     
-    // Only load QRCode when component is mounted
-    import('qrcode').then(QRCode => {
-      // Generate URL that will open the app with the room ID
+    // Generate URL that will open the app with the room ID
+    // Handle various deployment scenarios properly
+    const generateShareUrl = () => {
+      // Get the base URL of the current location
+      const currentUrl = window.location.href;
       const baseUrl = window.location.origin;
-      const joinUrl = `${baseUrl}/receive?room=${roomId}`;
       
-      // Generate QR code as data URL
-      QRCode.toDataURL(joinUrl, {
-        width: size,
-        margin: 2,
-        color: {
-          dark: '#000',
-          light: '#fff'
-        }
-      })
-      .then(url => {
-        setQrDataUrl(url);
-      })
-      .catch(err => {
-        console.error('Error generating QR code:', err);
+      // Create the join URL - ensure we don't append 'receive' if we're already on a /receive path
+      let joinUrl;
+      if (currentUrl.includes('/receive')) {
+        // We're already on the receive page, just add/update the room parameter
+        const url = new URL(currentUrl);
+        url.searchParams.set('room', roomId);
+        joinUrl = url.toString();
+      } else if (currentUrl.includes('/send')) {
+        // We're on the send page, change to receive and add room parameter
+        joinUrl = `${baseUrl}/receive?room=${roomId}`;
+      } else {
+        // We're on the main page, add /receive path and room parameter
+        joinUrl = `${baseUrl}/receive?room=${roomId}`;
+      }
+      
+      setShareUrl(joinUrl);
+      return joinUrl;
+    };
+    
+    const url = generateShareUrl();
+    
+    // Only load QRCode when component is mounted and showQr is true
+    if (showQr) {
+      import('qrcode').then(QRCode => {
+        // Generate QR code as data URL
+        QRCode.toDataURL(url, {
+          width: size,
+          margin: 2,
+          color: {
+            dark: '#000',
+            light: '#fff'
+          }
+        })
+        .then(url => {
+          setQrDataUrl(url);
+        })
+        .catch(err => {
+          console.error('Error generating QR code:', err);
+        });
+      }).catch(err => {
+        console.error('Error loading QRCode library:', err);
       });
-    }).catch(err => {
-      console.error('Error loading QRCode library:', err);
-    });
-  }, [roomId, size]);
+    }
+  }, [roomId, size, showQr]);
   
   if (!roomId) return null;
   
@@ -67,9 +94,31 @@ const QRCodeDisplay = ({ roomId, size = 180 }) => {
               <div className="qr-loading">Generating QR code...</div>
             )}
             
+            {shareUrl && (
+              <div className="mt-4 mb-2">
+                <button
+                  onClick={() => {
+                    if (navigator.share) {
+                      navigator.share({
+                        title: 'Join my file transfer',
+                        text: 'Scan this code or click the link to receive my file',
+                        url: shareUrl
+                      }).catch(err => console.error('Error sharing:', err));
+                    } else {
+                      navigator.clipboard.writeText(shareUrl);
+                      alert('Link copied to clipboard!');
+                    }
+                  }}
+                  className="btn btn-primary btn-sm"
+                >
+                  Share Link
+                </button>
+              </div>
+            )}
+            
             <button
               onClick={() => setShowQr(false)}
-              className="btn btn-secondary btn-sm mt-4"
+              className="btn btn-secondary btn-sm mt-2"
             >
               Hide QR Code
             </button>
