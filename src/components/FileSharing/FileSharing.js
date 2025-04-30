@@ -1,30 +1,39 @@
 import React, { useState, useEffect } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import FileSender from './FileSender';
 import FileReceiver from './FileReceiver';
 
 /**
  * Main FileSharing component that handles mode selection
- * Using traditional CSS instead of Tailwind
+ * Updated to work with React Router for QR code scanning
  */
-const FileSharing = () => {
-  const [mode, setMode] = useState('choose'); // 'choose', 'send', 'receive'
+const FileSharing = ({ initialMode = 'choose' }) => {
+  const [mode, setMode] = useState(initialMode);
+  const location = useLocation();
+  const navigate = useNavigate();
 
   useEffect(() => {
-    // Check if URL indicates a specific mode
+    // Check URL parameters and paths
     const checkUrlForMode = () => {
       try {
-        const path = window.location.pathname;
-        const urlParams = new URLSearchParams(window.location.search);
+        const urlParams = new URLSearchParams(location.search);
+        const pathname = location.pathname;
         
-        // If path ends with /send, go to send mode
-        if (path.endsWith('/send')) {
+        // If path is /send, go to send mode
+        if (pathname === '/send') {
           setMode('send');
           return;
         }
         
-        // If path ends with /receive or has room parameter, go to receive mode
-        if (path.endsWith('/receive') || urlParams.has('room')) {
+        // If path is /receive or has room parameter, go to receive mode
+        if (pathname === '/receive' || urlParams.has('room')) {
           setMode('receive');
+          return;
+        }
+        
+        // If initialMode was provided, use that
+        if (initialMode !== 'choose') {
+          setMode(initialMode);
           return;
         }
       } catch (error) {
@@ -33,13 +42,12 @@ const FileSharing = () => {
     };
     
     checkUrlForMode();
-  }, []);
+  }, [location, initialMode]);
 
-  // Reset to initial state
+  // Reset to initial state and update URL
   const resetApp = () => {
     setMode('choose');
-    // Clear URL parameters without reloading the page
-    window.history.replaceState({}, document.title, window.location.pathname);
+    navigate('/', { replace: true });
   };
 
   return (
@@ -58,7 +66,10 @@ const FileSharing = () => {
             <div className="grid grid-cols-1 grid-cols-2-sm gap-4">
               <button 
                 className="btn btn-primary btn-lg btn-block"
-                onClick={() => setMode('send')}
+                onClick={() => {
+                  setMode('send');
+                  navigate('/send', { replace: true });
+                }}
               >
                 <div className="flex flex-col items-center">
                   <svg className="mb-2" width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -69,7 +80,10 @@ const FileSharing = () => {
               </button>
               <button 
                 className="btn btn-success btn-lg btn-block"
-                onClick={() => setMode('receive')}
+                onClick={() => {
+                  setMode('receive');
+                  navigate('/receive', { replace: true });
+                }}
               >
                 <div className="flex flex-col items-center">
                   <svg className="mb-2" width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor">
