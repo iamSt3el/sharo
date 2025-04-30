@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 
 /**
- * QR Code display component with improved URL handling
- * for better compatibility across environments
+ * QR Code display component that generates URLs pointing directly to the server
+ * for better cross-device compatibility
  */
 const QRCodeDisplay = ({ roomId, size = 180 }) => {
   const [qrDataUrl, setQrDataUrl] = useState('');
@@ -14,12 +14,16 @@ const QRCodeDisplay = ({ roomId, size = 180 }) => {
     // Only load QRCode when component is mounted and showQr is true
     import('qrcode').then(QRCode => {
       try {
-        // Generate URL that will open the app with the room ID
-        const protocol = window.location.protocol;
-        const hostname = window.location.host;
+        // Instead of pointing to the frontend, point directly to the server
+        // The server will handle the redirect
         
-        // Create a direct URL to the receiver with the room ID parameter
-        const joinUrl = `${protocol}//${hostname}/receive?room=${roomId}`;
+        // The server URL should be configured in your environment
+        // If not available, we'll use a fallback
+        const SERVER_URL = process.env.REACT_APP_SERVER_URL || 'https://your-server-url.onrender.com';
+        
+        // Create a URL that points to the server's /receive endpoint
+        const joinUrl = `${SERVER_URL}/receive?room=${roomId}`;
+        console.log('Generated QR URL:', joinUrl);
         
         // Generate QR code as data URL
         QRCode.toDataURL(joinUrl, {
@@ -45,6 +49,11 @@ const QRCodeDisplay = ({ roomId, size = 180 }) => {
   }, [roomId, size, showQr]);
   
   if (!roomId) return null;
+  
+  // Get server URL for the share link
+  const getServerUrl = () => {
+    return process.env.REACT_APP_SERVER_URL || 'https://your-server-url.onrender.com';
+  };
   
   return (
     <div className="qr-code-container">
@@ -79,9 +88,7 @@ const QRCodeDisplay = ({ roomId, size = 180 }) => {
               <button
                 onClick={() => {
                   try {
-                    const protocol = window.location.protocol;
-                    const hostname = window.location.host;
-                    const joinUrl = `${protocol}//${hostname}/receive?room=${roomId}`;
+                    const joinUrl = `${getServerUrl()}/receive?room=${roomId}`;
                     
                     if (navigator.share) {
                       navigator.share({
