@@ -19,7 +19,7 @@ const QRCodeDisplay = ({ roomId, size = 180 }) => {
         
         // The server URL should be configured in your environment
         // If not available, we'll use a fallback
-        const SERVER_URL = process.env.REACT_APP_SERVER_URL || 'https://your-server-url.onrender.com';
+        const SERVER_URL = process.env.REACT_APP_SERVER_URL || 'https://sharo.onrender.com';
         
         // Create a URL that points to the server's /receive endpoint
         const joinUrl = `${SERVER_URL}/receive?room=${roomId}`;
@@ -52,7 +52,7 @@ const QRCodeDisplay = ({ roomId, size = 180 }) => {
   
   // Get server URL for the share link
   const getServerUrl = () => {
-    return process.env.REACT_APP_SERVER_URL || 'https://your-server-url.onrender.com';
+    return process.env.REACT_APP_SERVER_URL || 'https://sharo.onrender.com';
   };
   
   return (
