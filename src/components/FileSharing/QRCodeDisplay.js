@@ -7,44 +7,22 @@ import React, { useEffect, useState } from 'react';
 const QRCodeDisplay = ({ roomId, size = 180 }) => {
   const [qrDataUrl, setQrDataUrl] = useState('');
   const [showQr, setShowQr] = useState(false);
-  const [shareUrl, setShareUrl] = useState('');
   
   useEffect(() => {
-    if (!roomId) return;
-    
-    // Generate URL that will open the app with the room ID
-    // Handle various deployment scenarios properly
-    const generateShareUrl = () => {
-      // Get the base URL of the current location
-      const currentUrl = window.location.href;
-      const baseUrl = window.location.origin;
-      
-      // Create the join URL - ensure we don't append 'receive' if we're already on a /receive path
-      let joinUrl;
-      if (currentUrl.includes('/receive')) {
-        // We're already on the receive page, just add/update the room parameter
-        const url = new URL(currentUrl);
-        url.searchParams.set('room', roomId);
-        joinUrl = url.toString();
-      } else if (currentUrl.includes('/send')) {
-        // We're on the send page, change to receive and add room parameter
-        joinUrl = `${baseUrl}/receive?room=${roomId}`;
-      } else {
-        // We're on the main page, add /receive path and room parameter
-        joinUrl = `${baseUrl}/receive?room=${roomId}`;
-      }
-      
-      setShareUrl(joinUrl);
-      return joinUrl;
-    };
-    
-    const url = generateShareUrl();
+    if (!roomId || !showQr) return;
     
     // Only load QRCode when component is mounted and showQr is true
-    if (showQr) {
-      import('qrcode').then(QRCode => {
+    import('qrcode').then(QRCode => {
+      try {
+        // Generate URL that will open the app with the room ID
+        const protocol = window.location.protocol;
+        const hostname = window.location.host;
+        
+        // Create a direct URL to the receiver with the room ID parameter
+        const joinUrl = `${protocol}//${hostname}/receive?room=${roomId}`;
+        
         // Generate QR code as data URL
-        QRCode.toDataURL(url, {
+        QRCode.toDataURL(joinUrl, {
           width: size,
           margin: 2,
           color: {
@@ -58,10 +36,12 @@ const QRCodeDisplay = ({ roomId, size = 180 }) => {
         .catch(err => {
           console.error('Error generating QR code:', err);
         });
-      }).catch(err => {
-        console.error('Error loading QRCode library:', err);
-      });
-    }
+      } catch (error) {
+        console.error('Error creating QR code URL:', error);
+      }
+    }).catch(err => {
+      console.error('Error loading QRCode library:', err);
+    });
   }, [roomId, size, showQr]);
   
   if (!roomId) return null;
@@ -94,27 +74,35 @@ const QRCodeDisplay = ({ roomId, size = 180 }) => {
               <div className="qr-loading">Generating QR code...</div>
             )}
             
-            {shareUrl && (
-              <div className="mt-4 mb-2">
-                <button
-                  onClick={() => {
+            <div className="mt-4 mb-2">
+              <p className="text-sm text-gray-500 mb-2">Room Code: <strong>{roomId}</strong></p>
+              <button
+                onClick={() => {
+                  try {
+                    const protocol = window.location.protocol;
+                    const hostname = window.location.host;
+                    const joinUrl = `${protocol}//${hostname}/receive?room=${roomId}`;
+                    
                     if (navigator.share) {
                       navigator.share({
                         title: 'Join my file transfer',
-                        text: 'Scan this code or click the link to receive my file',
-                        url: shareUrl
+                        text: 'Click this link to receive my file',
+                        url: joinUrl
                       }).catch(err => console.error('Error sharing:', err));
                     } else {
-                      navigator.clipboard.writeText(shareUrl);
+                      navigator.clipboard.writeText(joinUrl);
                       alert('Link copied to clipboard!');
                     }
-                  }}
-                  className="btn btn-primary btn-sm"
-                >
-                  Share Link
-                </button>
-              </div>
-            )}
+                  } catch (error) {
+                    console.error('Error sharing link:', error);
+                    alert('Could not share link. Please copy the room code manually.');
+                  }
+                }}
+                className="btn btn-primary btn-sm"
+              >
+                Share Link
+              </button>
+            </div>
             
             <button
               onClick={() => setShowQr(false)}
