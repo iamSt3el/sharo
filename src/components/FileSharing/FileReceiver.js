@@ -35,6 +35,10 @@ const FileReceiver = () => {
   const startTime = useRef(null);
   const speedSamples = useRef([]);
   
+  // Reference to track file processing status (important for the fix)
+  const isFileProcessed = useRef(false);
+  const processRequestSent = useRef(false);
+  
   useEffect(() => {
     // Set up event handlers for WebRTC service
     webRTCService.on('onPeerConnected', handlePeerConnected);
@@ -90,7 +94,7 @@ const FileReceiver = () => {
         const currentTime = Date.now();
         // If no update in 2 seconds, update UI with current progress
         if (currentTime - lastProgressUpdate.current > 2000) {
-          updateProgressUI();
+          updateProgressUI(true);  // Pass true to indicate this is an interval update
         }
       }, 1000);
       
@@ -112,7 +116,7 @@ const FileReceiver = () => {
   }, [transferActive, isConnected]);
   
   // Update progress UI function
-  const updateProgressUI = () => {
+  const updateProgressUI = (isIntervalUpdate = false) => {
     if (fileSize.current <= 0) return;
     
     const now = Date.now();
@@ -151,7 +155,10 @@ const FileReceiver = () => {
     if (percentage < 100) {
       setStatus(`Receiving ${fileInfo.current?.name || 'file'}: ${percentage}%`);
       setStatusType('info');
-    } else if (percentage === 100 && !receivedFile && !processingFile) {
+    } else if (percentage === 100 && !receivedFile && !processingFile && !isFileProcessed.current && !processRequestSent.current) {
+      // Only process once and only if not already processed or in progress
+      // Check for both processing state and processed flag
+      processRequestSent.current = true; // Mark that we've sent the processing request
       setProcessingFile(true);
       setStatus('Processing file...');
       setStatusType('info');
@@ -291,6 +298,8 @@ const FileReceiver = () => {
     setReceivedFile(null);
     setFileBeingReceived(null);
     setProcessingFile(false);
+    isFileProcessed.current = false;  // Reset processing flags
+    processRequestSent.current = false;
     
     setIsConnecting(true);
     setStatus('Connecting to room...');
@@ -306,7 +315,17 @@ const FileReceiver = () => {
 
   // Process the received file
   const processReceivedFile = async () => {
+    // Guard clause - if already processed or no chunks, don't process again
+    if (isFileProcessed.current) {
+      console.log("File already processed, skipping duplicate processing");
+      setProcessingFile(false);
+      return;
+    }
+    
     try {
+      // Set flag to indicate processing has started
+      isFileProcessed.current = true;
+      
       setStatus('Transfer complete. Processing file...');
       let finalBlob;
       
@@ -326,15 +345,15 @@ const FileReceiver = () => {
         setStatus('Decrypting file...');
         const decryptedChunks = [];
         
-        // Flag to prevent multiple completions
-        let completed = false;
+        // Track decryption completion with a local flag
+        let decryptionCompleted = false;
         
         // Process in smaller batches to avoid UI freezing
         const processChunk = async (index) => {
-          if (index >= fileChunks.current.length || completed) {
+          if (index >= fileChunks.current.length || decryptionCompleted) {
             // Only complete once
-            if (!completed) {
-              completed = true;
+            if (!decryptionCompleted) {
+              decryptionCompleted = true;
               // All chunks processed
               finalBlob = new Blob(decryptedChunks, { type: fileInfo.current?.type || '' });
               const downloadLink = createDownloadLink(finalBlob, fileInfo.current?.name || 'file');
@@ -354,6 +373,7 @@ const FileReceiver = () => {
               setStatus(`Decrypting file: ${percent}%`);
             }
             
+            // Decrypt this chunk
             const decryptedChunk = await encryption.decryptData(
               encryptionKey.current,
               fileChunks.current[index],
@@ -362,21 +382,23 @@ const FileReceiver = () => {
             
             decryptedChunks.push(decryptedChunk);
             
-            // Schedule next chunk with setTimeout to give UI a chance to update
-            setTimeout(() => processChunk(index + 1), 0);
+            // Schedule next chunk - use requestAnimationFrame for better performance
+            requestAnimationFrame(() => {
+              setTimeout(() => processChunk(index + 1), 0);
+            });
           } catch (decryptError) {
-            if (!completed) {
-              completed = true;
+            // Only handle error if not already completed
+            if (!decryptionCompleted) {
+              decryptionCompleted = true;
               console.error("Decryption error:", decryptError);
               setStatus('Decryption error: ' + decryptError.message);
               setStatusType('error');
               setProcessingFile(false);
             }
-            return;
           }
         };
         
-        // Start processing
+        // Start processing with the first chunk
         processChunk(0);
       } else {
         // Not encrypted, just create a blob from all chunks
@@ -393,6 +415,7 @@ const FileReceiver = () => {
       setStatus('Error processing file: ' + error.message);
       setStatusType('error');
       setProcessingFile(false);
+      // Don't reset isFileProcessed.current, as we still consider it "processed" even with error
     }
   };
   
@@ -430,6 +453,10 @@ const FileReceiver = () => {
             size: message.size
           };
           
+          // Reset processing flags for new file
+          isFileProcessed.current = false;
+          processRequestSent.current = false;
+          
           // Set file being received information for UI
           setFileBeingReceived({
             name: message.name,
@@ -462,6 +489,12 @@ const FileReceiver = () => {
             setProgress(100);
           }
           
+          // Make sure the file hasn't already been processed or isn't currently processing
+          if (isFileProcessed.current || processingFile || processRequestSent.current) {
+            console.log("Transfer complete received, but file is already processed or processing");
+            return;
+          }
+          
           // For very large files, if we get a transfer-complete but progress
           // is still low, gradually animate to 100%
           if (progress < 95) {
@@ -469,12 +502,16 @@ const FileReceiver = () => {
             const animateToCompletion = (current) => {
               if (current >= 100) {
                 setProgress(100);
-                setTimeout(() => {
-                  if (!processingFile) {
-                    setProcessingFile(true);
+                
+                // Only process if not already processed or processing
+                if (!isFileProcessed.current && !processingFile && !processRequestSent.current) {
+                  processRequestSent.current = true;
+                  setProcessingFile(true);
+                  
+                  setTimeout(() => {
                     processReceivedFile();
-                  }
-                }, 200);
+                  }, 200);
+                }
                 return;
               }
               
@@ -484,13 +521,16 @@ const FileReceiver = () => {
             
             animateToCompletion(progress);
           } else {
-            // Just set to 100% and process file
+            // Just set to 100% and process file if not already processed or processing
             setProgress(100);
             
-            // Process file if not already processing
-            if (!processingFile) {
+            if (!isFileProcessed.current && !processingFile && !processRequestSent.current) {
+              processRequestSent.current = true;
               setProcessingFile(true);
-              processReceivedFile();
+              
+              setTimeout(() => {
+                processReceivedFile();
+              }, 200);
             }
           }
         }
@@ -516,7 +556,7 @@ const FileReceiver = () => {
       // Update UI less frequently for better performance
       const now = Date.now();
       if (now - lastProgressUpdate.current > 200) { // 200ms between updates for smoother UI
-        updateProgressUI();
+        updateProgressUI(false);  // This is not an interval update
       }
     }
   };
