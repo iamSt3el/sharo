@@ -3,6 +3,8 @@ import webRTCService from '../../services/webrtc';
 import { formatFileSize, createDownloadLink } from '../../utils/fileUtils';
 import { validateRoomId } from '../../utils/idGenerator';
 import * as encryption from '../../services/encryption';
+import ProgressBar from './ProgressBar'; // Import the ProgressBar component
+import StatusMessage from './StatusMessage'; // Import the StatusMessage component
 
 const FileReceiver = () => {
   const [roomId, setRoomId] = useState('');
@@ -13,6 +15,9 @@ const FileReceiver = () => {
   const [statusType, setStatusType] = useState('info');
   const [progress, setProgress] = useState(0);
   const [isEncrypted, setIsEncrypted] = useState(false);
+  const [fileBeingReceived, setFileBeingReceived] = useState(null);
+  const [transferActive, setTransferActive] = useState(false);
+  const [connectionStable, setConnectionStable] = useState(false);
   
   // Refs for file transfer state
   const fileChunks = useRef([]);
@@ -21,6 +26,8 @@ const FileReceiver = () => {
   const encryptionKey = useRef(null);
   const encryptionIV = useRef(null);
   const fileInfo = useRef(null);
+  const lastProgressUpdate = useRef(Date.now());
+  const progressUpdateInterval = useRef(null);
   
   useEffect(() => {
     // Set up event handlers for WebRTC service
@@ -52,14 +59,72 @@ const FileReceiver = () => {
     checkUrlParams();
     
     return () => {
-      // Clean up WebRTC connection when component unmounts
+      // Clean up WebRTC connection and intervals when component unmounts
+      if (progressUpdateInterval.current) {
+        clearInterval(progressUpdateInterval.current);
+      }
       webRTCService.cleanup();
     };
   }, []);
+
+  // Setup progress monitoring for large files
+  useEffect(() => {
+    // Start progress monitoring when transfer is active
+    if (transferActive && fileSize.current > 0) {
+      // Clear any existing interval
+      if (progressUpdateInterval.current) {
+        clearInterval(progressUpdateInterval.current);
+      }
+      
+      // Create a new interval to update UI even when chunks are slow to arrive
+      progressUpdateInterval.current = setInterval(() => {
+        const currentTime = Date.now();
+        // If no update in 2 seconds, update UI with current progress
+        if (currentTime - lastProgressUpdate.current > 2000) {
+          updateProgressUI();
+        }
+      }, 1000);
+      
+      // Make sure connection status is visible
+      setConnectionStable(isConnected);
+    } else {
+      // Clear interval when transfer is not active
+      if (progressUpdateInterval.current) {
+        clearInterval(progressUpdateInterval.current);
+        progressUpdateInterval.current = null;
+      }
+    }
+    
+    return () => {
+      if (progressUpdateInterval.current) {
+        clearInterval(progressUpdateInterval.current);
+      }
+    };
+  }, [transferActive, isConnected]);
+  
+  // Update progress UI function
+  const updateProgressUI = () => {
+    if (fileSize.current > 0) {
+      const percentage = Math.floor((receivedSize.current / fileSize.current) * 100);
+      setProgress(percentage);
+      
+      // Update status based on progress
+      if (percentage < 100) {
+        setStatus(`Receiving ${fileInfo.current?.name || 'file'}: ${percentage}%`);
+        setStatusType('info');
+      } else if (percentage === 100 && !receivedFile) {
+        setStatus('Processing file...');
+        setStatusType('info');
+      }
+      
+      lastProgressUpdate.current = Date.now();
+    }
+  };
   
   // Handle peer connection established
   const handlePeerConnected = () => {
     setIsConnected(true);
+    setConnectionStable(true);
     setIsConnecting(false);
     setStatus('Connected to sender! Waiting for a file...');
     setStatusType('success');
@@ -68,13 +133,22 @@ const FileReceiver = () => {
   // Handle peer disconnection
   const handlePeerDisconnected = () => {
     setIsConnected(false);
-    setStatus('Connection to sender lost.');
-    setStatusType('warning');
+    setConnectionStable(false);
+    
+    if (transferActive) {
+      setStatus('Connection to sender lost during transfer.');
+      setStatusType('error');
+      setTransferActive(false);
+    } else {
+      setStatus('Connection to sender lost.');
+      setStatusType('warning');
+    }
   };
   
   // Handle data channel opening
   const handleDataChannelOpen = () => {
     setIsConnected(true);
+    setConnectionStable(true);
     setIsConnecting(false);
     setStatus('Ready to receive files!');
     setStatusType('success');
@@ -83,6 +157,13 @@ const FileReceiver = () => {
   // Handle data channel closing
   const handleDataChannelClose = () => {
     setIsConnected(false);
+    setConnectionStable(false);
+    
+    if (transferActive) {
+      setStatus('Connection lost during file transfer.');
+      setStatusType('error');
+      setTransferActive(false);
+    }
   };
   
   // Handle room being closed by the sender
@@ -90,7 +171,9 @@ const FileReceiver = () => {
     setStatus('The sender closed the room.');
     setStatusType('warning');
     setIsConnected(false);
+    setConnectionStable(false);
     setIsConnecting(false);
+    setTransferActive(false);
   };
   
   // Connect to the room
@@ -117,7 +200,9 @@ const FileReceiver = () => {
     encryptionIV.current = null;
     fileInfo.current = null;
     setProgress(0);
+    setTransferActive(false);
     setReceivedFile(null);
+    setFileBeingReceived(null);
     
     setIsConnecting(true);
     setStatus('Connecting to room...');
@@ -164,6 +249,14 @@ const FileReceiver = () => {
             size: message.size
           };
           
+          // Set file being received information for UI
+          setFileBeingReceived({
+            name: message.name,
+            size: message.size,
+            type: message.fileType
+          });
+          
+          setTransferActive(true);
           setStatus(`Receiving ${message.name} (${formatFileSize(message.size)})...`);
           setStatusType('info');
           
@@ -176,6 +269,7 @@ const FileReceiver = () => {
         else if (message.type === 'transfer-complete') {
           // File transfer complete, process the received file
           try {
+            setStatus('Transfer complete. Processing file...');
             let finalBlob;
             
             // If the file was encrypted, decrypt all chunks before creating the blob
@@ -195,6 +289,7 @@ const FileReceiver = () => {
                   console.error("Decryption error:", decryptError);
                   setStatus('Decryption error: ' + decryptError.message);
                   setStatusType('error');
+                  setTransferActive(false);
                   return;
                 }
               }
@@ -210,10 +305,12 @@ const FileReceiver = () => {
             setStatus(`Received ${message.name} successfully!`);
             setStatusType('success');
             setProgress(100);
+            setTransferActive(false);
           } catch (error) {
             console.error("Error processing received file:", error);
             setStatus('Error processing file: ' + error.message);
             setStatusType('error');
+            setTransferActive(false);
           }
         }
       } catch (e) {
@@ -224,14 +321,12 @@ const FileReceiver = () => {
     else {
       fileChunks.current.push(data);
       receivedSize.current += data.size;
-      const percentage = Math.floor((receivedSize.current / fileSize.current) * 100);
-      setProgress(percentage);
-      setStatus(`Receiving file: ${percentage}%`);
+      updateProgressUI();
     }
   };
   
   return (
-    <div>
+    <div className="file-receiver">
       <div className="form-group mb-6">
         <h2 className="mb-2">Enter sharing code</h2>
         <div className="input-group">
@@ -253,10 +348,27 @@ const FileReceiver = () => {
         </div>
       </div>
       
+      {connectionStable && (
+        <div className="connection-status mb-4">
+          <div className="status-dot status-dot-connected"></div>
+          <span className="text-sm">Connected to sender</span>
+        </div>
+      )}
+      
+      {fileBeingReceived && (
+        <div className="file-being-received mb-4">
+          <h3 className="text-lg font-medium mb-2">Receiving File</h3>
+          <div className="file-details p-3 bg-blue-50 rounded border border-blue-200">
+            <p className="font-medium">{fileBeingReceived.name}</p>
+            <p className="text-sm text-gray-600">{formatFileSize(fileBeingReceived.size)}</p>
+          </div>
+        </div>
+      )}
+      
       {isConnected && isEncrypted && (
-        <div className="encryption-badge">
+        <div className="encryption-badge mb-4">
           <div className="encryption-badge-icon">
-            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" width="24" height="24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
             </svg>
             <span className="encryption-badge-title">End-to-end encrypted transfer</span>
@@ -267,55 +379,35 @@ const FileReceiver = () => {
         </div>
       )}
       
-      {isConnected && (
-        <div className="connection-status">
-          <div className="status-dot status-dot-connected"></div>
-          <span className="text-sm">Connected to sender</span>
-        </div>
-      )}
-      
-      {progress > 0 && (
-        <div className="progress-container">
-          <div 
-            className={`progress-bar ${progress < 100 ? 'progress-bar-blue' : 'progress-bar-green'}`}
-            style={{ width: `${progress}%` }}
-          ></div>
-          <div className="progress-text">{progress}%</div>
-        </div>
-      )}
+      {/* Use the imported ProgressBar component */}
+      {transferActive && <ProgressBar progress={progress} />}
       
       {receivedFile && (
         <div className="file-received">
-          <h3>File Received!</h3>
-          <p>{receivedFile.name} ({formatFileSize(receivedFile.size)})</p>
+          <div className="flex items-center mb-2">
+            <svg className="w-6 h-6 text-green-500 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+            <h3>File Received!</h3>
+          </div>
+          <p className="mb-3">{receivedFile.name} ({formatFileSize(receivedFile.size)})</p>
           <a 
             href={receivedFile.url} 
             download={receivedFile.name}
+            className="btn btn-success btn-block"
           >
-            Download File
+            <span className="flex items-center justify-center">
+              <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+              </svg>
+              Download File
+            </span>
           </a>
         </div>
       )}
       
-      {status && (
-        <div className={`status-message status-${statusType}`}>
-          <svg className="status-message-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            {statusType === 'success' && (
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-            )}
-            {statusType === 'error' && (
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            )}
-            {statusType === 'warning' && (
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-            )}
-            {statusType === 'info' && (
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            )}
-          </svg>
-          <p>{status}</p>
-        </div>
-      )}
+      {/* Use StatusMessage component instead of custom status div */}
+      {status && <StatusMessage status={status} type={statusType} />}
     </div>
   );
 };
