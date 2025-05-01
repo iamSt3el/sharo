@@ -2,27 +2,22 @@ import React, { useEffect, useState, useRef } from 'react';
 
 /**
  * Enhanced progress bar component for file transfer
- * - Smoother animations for large files
- * - Better visual feedback
+ * - Better animation for large files
+ * - Visual feedback during transfer
  * - Processing state indicator
- * - Animated transitions
  */
 const ProgressBar = ({ 
   progress, 
   showPercentage = true, 
   animated = true,
   color = null,
-  height = "h-2", // Tailwind height class
-  showText = true,
   processingText = null
 }) => {
   const [displayProgress, setDisplayProgress] = useState(0);
-  const [animationComplete, setAnimationComplete] = useState(false);
   const lastProgressRef = useRef(0);
   const animationRef = useRef(null);
   
-  // Smooth progress animation, especially important for large files
-  // where the progress jumps from 0 to 100% suddenly
+  // Smooth progress animation
   useEffect(() => {
     // Don't animate backwards
     if (progress < lastProgressRef.current) {
@@ -43,9 +38,8 @@ const ProgressBar = ({
       const targetProgress = progress;
       
       // Calculate animation duration based on the jump size
-      // Larger jumps get slower animations to make them feel more natural
       const jumpSize = targetProgress - currentProgress;
-      const durationMs = Math.min(Math.max(jumpSize * 30, 500), 3000); // Between 500ms and 3s
+      const durationMs = Math.min(Math.max(jumpSize * 30, 500), 2000); // Between 500ms and 2s
       
       // Calculate step size for a smooth animation
       const fps = 30;
@@ -59,7 +53,6 @@ const ProgressBar = ({
         if (currentProgress >= targetProgress) {
           // Animation complete
           setDisplayProgress(targetProgress);
-          setAnimationComplete(true);
           clearInterval(animationRef.current);
           animationRef.current = null;
         } else {
@@ -73,8 +66,16 @@ const ProgressBar = ({
         }
       };
     } else {
-      // For small increments, follow immediately or with slight delay
-      setDisplayProgress(progress);
+      // For small increments, follow immediately but with slight smoothing
+      const smoothingFactor = 0.2; // Lower = smoother transitions
+      const newProgress = displayProgress + (progress - displayProgress) * smoothingFactor;
+      
+      // If we're close to the target, just set it directly
+      if (Math.abs(progress - newProgress) < 0.5) {
+        setDisplayProgress(progress);
+      } else {
+        setDisplayProgress(newProgress);
+      }
     }
     
     lastProgressRef.current = progress;
@@ -113,7 +114,7 @@ const ProgressBar = ({
   
   return (
     <div className="w-full mt-6 mb-4">
-      <div className={`progress-container ${height} bg-gray-200 rounded-full overflow-hidden`}>
+      <div className="progress-container bg-gray-200 rounded-full overflow-hidden">
         <div 
           className={`h-full rounded-full ${getBarColor()} ${getAnimationClass()}`}
           style={{ 
@@ -123,40 +124,12 @@ const ProgressBar = ({
         ></div>
       </div>
       
-      {showPercentage && showText && (
+      {showPercentage && (
         <div className="flex justify-between mt-2">
           <span className="text-sm text-gray-600">{getStatusText()}</span>
           <span className="text-sm font-medium">{displayProgressRounded}%</span>
         </div>
       )}
-    </div>
-  );
-};
-
-// Compact version for smaller UI areas
-ProgressBar.Compact = ({ progress, animated = true, color = null }) => {
-  return (
-    <ProgressBar 
-      progress={progress} 
-      showPercentage={false} 
-      animated={animated} 
-      color={color}
-      height="h-1"
-      showText={false}
-    />
-  );
-};
-
-// Indeterminate version for when we don't know the progress percentage
-ProgressBar.Indeterminate = ({ color = "bg-blue-500", height = "h-2" }) => {
-  return (
-    <div className="w-full mt-6 mb-4">
-      <div className={`progress-container ${height} bg-gray-200 rounded-full overflow-hidden`}>
-        <div 
-          className={`${color} h-full rounded-full progress-indeterminate`}
-          style={{ width: '40%' }}
-        ></div>
-      </div>
     </div>
   );
 };

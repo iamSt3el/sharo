@@ -326,17 +326,24 @@ const FileReceiver = () => {
         setStatus('Decrypting file...');
         const decryptedChunks = [];
         
+        // Flag to prevent multiple completions
+        let completed = false;
+        
         // Process in smaller batches to avoid UI freezing
         const processChunk = async (index) => {
-          if (index >= fileChunks.current.length) {
-            // All chunks processed
-            finalBlob = new Blob(decryptedChunks, { type: fileInfo.current?.type || '' });
-            const downloadLink = createDownloadLink(finalBlob, fileInfo.current?.name || 'file');
-            setReceivedFile(downloadLink);
-            
-            setStatus(`Received ${fileInfo.current?.name || 'file'} successfully!`);
-            setStatusType('success');
-            setProcessingFile(false);
+          if (index >= fileChunks.current.length || completed) {
+            // Only complete once
+            if (!completed) {
+              completed = true;
+              // All chunks processed
+              finalBlob = new Blob(decryptedChunks, { type: fileInfo.current?.type || '' });
+              const downloadLink = createDownloadLink(finalBlob, fileInfo.current?.name || 'file');
+              setReceivedFile(downloadLink);
+              
+              setStatus(`Received ${fileInfo.current?.name || 'file'} successfully!`);
+              setStatusType('success');
+              setProcessingFile(false);
+            }
             return;
           }
           
@@ -358,10 +365,13 @@ const FileReceiver = () => {
             // Schedule next chunk with setTimeout to give UI a chance to update
             setTimeout(() => processChunk(index + 1), 0);
           } catch (decryptError) {
-            console.error("Decryption error:", decryptError);
-            setStatus('Decryption error: ' + decryptError.message);
-            setStatusType('error');
-            setProcessingFile(false);
+            if (!completed) {
+              completed = true;
+              console.error("Decryption error:", decryptError);
+              setStatus('Decryption error: ' + decryptError.message);
+              setStatusType('error');
+              setProcessingFile(false);
+            }
             return;
           }
         };
