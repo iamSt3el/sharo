@@ -3,8 +3,8 @@ import webRTCService from '../../services/webrtc';
 import { formatFileSize, createDownloadLink } from '../../utils/fileUtils';
 import { validateRoomId } from '../../utils/idGenerator';
 import * as encryption from '../../services/encryption';
-import ProgressBar from './ProgressBar'; // Import the ProgressBar component
-import StatusMessage from './StatusMessage'; // Import the StatusMessage component
+import ProgressBar from './ProgressBar'; 
+import StatusMessage from './StatusMessage';
 
 const FileReceiver = () => {
   const [roomId, setRoomId] = useState('');
@@ -18,6 +18,9 @@ const FileReceiver = () => {
   const [fileBeingReceived, setFileBeingReceived] = useState(null);
   const [transferActive, setTransferActive] = useState(false);
   const [connectionStable, setConnectionStable] = useState(false);
+  const [processingFile, setProcessingFile] = useState(false);
+  const [transferSpeed, setTransferSpeed] = useState(0);
+  const [timeRemaining, setTimeRemaining] = useState(null);
   
   // Refs for file transfer state
   const fileChunks = useRef([]);
@@ -28,6 +31,9 @@ const FileReceiver = () => {
   const fileInfo = useRef(null);
   const lastProgressUpdate = useRef(Date.now());
   const progressUpdateInterval = useRef(null);
+  const lastReceivedChunks = useRef([]);
+  const startTime = useRef(null);
+  const speedSamples = useRef([]);
   
   useEffect(() => {
     // Set up event handlers for WebRTC service
@@ -76,6 +82,9 @@ const FileReceiver = () => {
         clearInterval(progressUpdateInterval.current);
       }
       
+      // Start timing for transfer speed calculation
+      startTime.current = Date.now();
+      
       // Create a new interval to update UI even when chunks are slow to arrive
       progressUpdateInterval.current = setInterval(() => {
         const currentTime = Date.now();
@@ -104,20 +113,97 @@ const FileReceiver = () => {
   
   // Update progress UI function
   const updateProgressUI = () => {
-    if (fileSize.current > 0) {
-      const percentage = Math.floor((receivedSize.current / fileSize.current) * 100);
-      setProgress(percentage);
-      
-      // Update status based on progress
-      if (percentage < 100) {
-        setStatus(`Receiving ${fileInfo.current?.name || 'file'}: ${percentage}%`);
-        setStatusType('info');
-      } else if (percentage === 100 && !receivedFile) {
-        setStatus('Processing file...');
-        setStatusType('info');
+    if (fileSize.current <= 0) return;
+    
+    const now = Date.now();
+    const percentage = Math.min(Math.floor((receivedSize.current / fileSize.current) * 100), 100);
+    setProgress(percentage);
+    
+    // Calculate transfer speed
+    if (startTime.current) {
+      const elapsedSeconds = (now - startTime.current) / 1000;
+      if (elapsedSeconds > 0) {
+        const instant = receivedSize.current / elapsedSeconds;
+        
+        // Add to speed samples for smoother calculation
+        speedSamples.current.push(instant);
+        if (speedSamples.current.length > 5) {
+          speedSamples.current.shift();
+        }
+        
+        // Calculate average speed
+        const avgSpeed = speedSamples.current.reduce((sum, speed) => sum + speed, 0) / 
+                          speedSamples.current.length;
+        setTransferSpeed(avgSpeed);
+        
+        // Estimate time remaining
+        if (avgSpeed > 0 && percentage < 100) {
+          const bytesRemaining = fileSize.current - receivedSize.current;
+          const secondsRemaining = bytesRemaining / avgSpeed;
+          setTimeRemaining(secondsRemaining);
+        } else if (percentage === 100) {
+          setTimeRemaining(0);
+        }
       }
+    }
+    
+    // Update status based on progress
+    if (percentage < 100) {
+      setStatus(`Receiving ${fileInfo.current?.name || 'file'}: ${percentage}%`);
+      setStatusType('info');
+    } else if (percentage === 100 && !receivedFile && !processingFile) {
+      setProcessingFile(true);
+      setStatus('Processing file...');
+      setStatusType('info');
       
-      lastProgressUpdate.current = Date.now();
+      // Process file with a slight delay to allow UI to update
+      setTimeout(() => {
+        processReceivedFile();
+      }, 200);
+    }
+    
+    lastProgressUpdate.current = now;
+  };
+  
+  // Format transfer speed for display
+  const formatSpeed = () => {
+    if (transferSpeed === 0) return '-- KB/s';
+    
+    const units = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
+    let speed = transferSpeed;
+    let unitIndex = 0;
+    
+    while (speed >= 1024 && unitIndex < units.length - 1) {
+      speed /= 1024;
+      unitIndex++;
+    }
+    
+    return `${speed.toFixed(1)} ${units[unitIndex]}`;
+  };
+  
+  // Format time remaining for display
+  const formatTimeRemaining = () => {
+    if (timeRemaining === null) return '--:--';
+    if (timeRemaining === 0) return 'Complete';
+    
+    if (timeRemaining < 1) {
+      return 'Almost done';
+    }
+    
+    if (timeRemaining > 3600) {
+      // More than an hour, show hours and minutes
+      const hours = Math.floor(timeRemaining / 3600);
+      const minutes = Math.floor((timeRemaining % 3600) / 60);
+      return `${hours}h ${minutes}m`;
+    } else if (timeRemaining > 60) {
+      // More than a minute, show minutes and seconds
+      const minutes = Math.floor(timeRemaining / 60);
+      const seconds = Math.floor(timeRemaining % 60);
+      return `${minutes}m ${seconds}s`;
+    } else {
+      // Less than a minute, just show seconds
+      const seconds = Math.ceil(timeRemaining);
+      return `${seconds}s`;
     }
   };
   
@@ -194,6 +280,7 @@ const FileReceiver = () => {
     
     // Reset file transfer state
     fileChunks.current = [];
+    lastReceivedChunks.current = [];
     receivedSize.current = 0;
     fileSize.current = 0;
     encryptionKey.current = null;
@@ -203,6 +290,7 @@ const FileReceiver = () => {
     setTransferActive(false);
     setReceivedFile(null);
     setFileBeingReceived(null);
+    setProcessingFile(false);
     
     setIsConnecting(true);
     setStatus('Connecting to room...');
@@ -214,6 +302,88 @@ const FileReceiver = () => {
     }
     
     webRTCService.initReceiver(roomIdToUse);
+  };
+
+  // Process the received file
+  const processReceivedFile = async () => {
+    try {
+      setStatus('Transfer complete. Processing file...');
+      let finalBlob;
+      
+      // For empty files, create an empty blob
+      if (fileChunks.current.length === 0) {
+        finalBlob = new Blob([], { type: fileInfo.current?.type || '' });
+        const downloadLink = createDownloadLink(finalBlob, fileInfo.current?.name || 'file');
+        setReceivedFile(downloadLink);
+        setStatus(`Received ${fileInfo.current?.name || 'file'} successfully!`);
+        setStatusType('success');
+        setProcessingFile(false);
+        return;
+      }
+      
+      // If the file was encrypted, decrypt all chunks before creating the blob
+      if (isEncrypted && encryptionKey.current && encryptionIV.current) {
+        setStatus('Decrypting file...');
+        const decryptedChunks = [];
+        
+        // Process in smaller batches to avoid UI freezing
+        const processChunk = async (index) => {
+          if (index >= fileChunks.current.length) {
+            // All chunks processed
+            finalBlob = new Blob(decryptedChunks, { type: fileInfo.current?.type || '' });
+            const downloadLink = createDownloadLink(finalBlob, fileInfo.current?.name || 'file');
+            setReceivedFile(downloadLink);
+            
+            setStatus(`Received ${fileInfo.current?.name || 'file'} successfully!`);
+            setStatusType('success');
+            setProcessingFile(false);
+            return;
+          }
+          
+          try {
+            // Update processing status every 10 chunks
+            if (index % 10 === 0) {
+              const percent = Math.round((index / fileChunks.current.length) * 100);
+              setStatus(`Decrypting file: ${percent}%`);
+            }
+            
+            const decryptedChunk = await encryption.decryptData(
+              encryptionKey.current,
+              fileChunks.current[index],
+              encryptionIV.current
+            );
+            
+            decryptedChunks.push(decryptedChunk);
+            
+            // Schedule next chunk with setTimeout to give UI a chance to update
+            setTimeout(() => processChunk(index + 1), 0);
+          } catch (decryptError) {
+            console.error("Decryption error:", decryptError);
+            setStatus('Decryption error: ' + decryptError.message);
+            setStatusType('error');
+            setProcessingFile(false);
+            return;
+          }
+        };
+        
+        // Start processing
+        processChunk(0);
+      } else {
+        // Not encrypted, just create a blob from all chunks
+        finalBlob = new Blob(fileChunks.current, { type: fileInfo.current?.type || '' });
+        const downloadLink = createDownloadLink(finalBlob, fileInfo.current?.name || 'file');
+        setReceivedFile(downloadLink);
+        
+        setStatus(`Received ${fileInfo.current?.name || 'file'} successfully!`);
+        setStatusType('success');
+        setProcessingFile(false);
+      }
+    } catch (error) {
+      console.error("Error processing received file:", error);
+      setStatus('Error processing file: ' + error.message);
+      setStatusType('error');
+      setProcessingFile(false);
+    }
   };
   
   // Handle incoming messages from the data channel
@@ -241,6 +411,7 @@ const FileReceiver = () => {
         else if (message.type === 'file-info') {
           // Prepare to receive a file
           fileChunks.current = [];
+          lastReceivedChunks.current = [];
           receivedSize.current = 0;
           fileSize.current = message.size;
           fileInfo.current = {
@@ -260,57 +431,57 @@ const FileReceiver = () => {
           setStatus(`Receiving ${message.name} (${formatFileSize(message.size)})...`);
           setStatusType('info');
           
+          // Reset speed calculations
+          startTime.current = Date.now();
+          speedSamples.current = [];
+          
           // Update encryption status based on sender's message
           if (message.encrypted !== undefined) {
             setIsEncrypted(message.encrypted);
           }
+          
+          // For large files, start at 1% to show the transfer is active
+          if (message.size > 100 * 1024 * 1024) { // > 100MB
+            setProgress(1);
+          }
         }
         
         else if (message.type === 'transfer-complete') {
-          // File transfer complete, process the received file
-          try {
-            setStatus('Transfer complete. Processing file...');
-            let finalBlob;
-            
-            // If the file was encrypted, decrypt all chunks before creating the blob
-            if (message.encrypted && encryptionKey.current && encryptionIV.current) {
-              setStatus('Decrypting file...');
-              const decryptedChunks = [];
-              
-              for (const chunk of fileChunks.current) {
-                try {
-                  const decryptedChunk = await encryption.decryptData(
-                    encryptionKey.current,
-                    chunk,
-                    encryptionIV.current
-                  );
-                  decryptedChunks.push(decryptedChunk);
-                } catch (decryptError) {
-                  console.error("Decryption error:", decryptError);
-                  setStatus('Decryption error: ' + decryptError.message);
-                  setStatusType('error');
-                  setTransferActive(false);
-                  return;
-                }
+          // If it's a zero-byte file, set progress to 100%
+          if (fileSize.current === 0) {
+            setProgress(100);
+          }
+          
+          // For very large files, if we get a transfer-complete but progress
+          // is still low, gradually animate to 100%
+          if (progress < 95) {
+            // Start a quick animation to 100%
+            const animateToCompletion = (current) => {
+              if (current >= 100) {
+                setProgress(100);
+                setTimeout(() => {
+                  if (!processingFile) {
+                    setProcessingFile(true);
+                    processReceivedFile();
+                  }
+                }, 200);
+                return;
               }
               
-              finalBlob = new Blob(decryptedChunks, { type: message.fileType });
-            } else {
-              finalBlob = new Blob(fileChunks.current, { type: message.fileType });
-            }
+              setProgress(current);
+              setTimeout(() => animateToCompletion(current + 5), 50);
+            };
             
-            const downloadLink = createDownloadLink(finalBlob, message.name);
-            setReceivedFile(downloadLink);
-            
-            setStatus(`Received ${message.name} successfully!`);
-            setStatusType('success');
+            animateToCompletion(progress);
+          } else {
+            // Just set to 100% and process file
             setProgress(100);
-            setTransferActive(false);
-          } catch (error) {
-            console.error("Error processing received file:", error);
-            setStatus('Error processing file: ' + error.message);
-            setStatusType('error');
-            setTransferActive(false);
+            
+            // Process file if not already processing
+            if (!processingFile) {
+              setProcessingFile(true);
+              processReceivedFile();
+            }
           }
         }
       } catch (e) {
@@ -319,9 +490,24 @@ const FileReceiver = () => {
     } 
     // Binary data (file chunks)
     else {
+      // Store chunk
       fileChunks.current.push(data);
-      receivedSize.current += data.size;
-      updateProgressUI();
+      lastReceivedChunks.current.push(data);
+      
+      // Update received size
+      const chunkSize = data.size || data.byteLength || 0;
+      receivedSize.current += chunkSize;
+      
+      // Limit the number of chunks kept in lastReceivedChunks (for memory management)
+      if (lastReceivedChunks.current.length > 10) {
+        lastReceivedChunks.current.shift();
+      }
+      
+      // Update UI less frequently for better performance
+      const now = Date.now();
+      if (now - lastProgressUpdate.current > 200) { // 200ms between updates for smoother UI
+        updateProgressUI();
+      }
     }
   };
   
@@ -361,6 +547,15 @@ const FileReceiver = () => {
           <div className="file-details p-3 bg-blue-50 rounded border border-blue-200">
             <p className="font-medium">{fileBeingReceived.name}</p>
             <p className="text-sm text-gray-600">{formatFileSize(fileBeingReceived.size)}</p>
+            
+            {transferActive && transferSpeed > 0 && (
+              <div className="transfer-stats mt-2 text-sm">
+                <div className="flex justify-between">
+                  <span>Speed: {formatSpeed()}</span>
+                  <span>ETA: {formatTimeRemaining()}</span>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -381,6 +576,18 @@ const FileReceiver = () => {
       
       {/* Use the imported ProgressBar component */}
       {transferActive && <ProgressBar progress={progress} />}
+      
+      {processingFile && (
+        <div className="processing-indicator text-center my-3">
+          <div className="inline-block">
+            <svg className="animate-spin h-5 w-5 text-blue-500 mr-2 inline-block" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"></circle>
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <span>Processing file...</span>
+          </div>
+        </div>
+      )}
       
       {receivedFile && (
         <div className="file-received">

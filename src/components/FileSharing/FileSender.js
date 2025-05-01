@@ -4,8 +4,9 @@ import { formatFileSize, readFileChunk } from '../../utils/fileUtils';
 import { generateReadableRoomId } from '../../utils/idGenerator';
 import * as encryption from '../../services/encryption';
 import QRCodeDisplay from './QRCodeDisplay';
-// Make sure to import our stylesheet if it's separate
-// import './qrCodeStyles.css';
+import ProgressBar from './ProgressBar';
+import StatusMessage from './StatusMessage';
+import useFileTransfer from './FileTransferHandler';
 
 const FileSender = () => {
   const [generatedId, setGeneratedId] = useState('');
@@ -13,13 +14,36 @@ const FileSender = () => {
   const [file, setFile] = useState(null);
   const [status, setStatus] = useState('');
   const [statusType, setStatusType] = useState('info');
-  const [progress, setProgress] = useState(0);
   const [isEncrypted, setIsEncrypted] = useState(true);
   const [isTransferring, setIsTransferring] = useState(false);
+  const [optimizeForLargeFiles, setOptimizeForLargeFiles] = useState(true);
   
-  // Refs for crypto
+  // Refs for crypto and transfer state
   const encryptionKey = useRef(null);
   const encryptionIV = useRef(null);
+  const transferAbortController = useRef(null);
+  
+  // Use the enhanced file transfer handler
+  const {
+    progress,
+    transferSpeed,
+    timeRemaining,
+    formatSpeed,
+    formatTimeRemaining,
+    startTransfer,
+    updateProgress,
+    completeTransfer,
+    resetTransfer
+  } = useFileTransfer({
+    fileSize: file?.size || 0,
+    isActive: isTransferring,
+    onComplete: () => {
+      // This is called when the progress reaches 100%
+      setStatus(`Sent ${file?.name || 'file'} successfully!`);
+      setStatusType('success');
+      setIsTransferring(false);
+    }
+  });
   
   useEffect(() => {
     // Create a room ID on component mount
@@ -46,6 +70,12 @@ const FileSender = () => {
     // Clean up on unmount
     return () => {
       webRTCService.cleanup();
+      
+      // Abort any in-progress transfers
+      if (transferAbortController.current) {
+        transferAbortController.current.abort();
+        transferAbortController.current = null;
+      }
     };
   }, []);
   
@@ -83,6 +113,12 @@ const FileSender = () => {
       setStatus('Connection lost during file transfer.');
       setStatusType('error');
       setIsTransferring(false);
+      
+      // Abort the transfer
+      if (transferAbortController.current) {
+        transferAbortController.current.abort();
+        transferAbortController.current = null;
+      }
     } else {
       setStatus('Receiver disconnected.');
       setStatusType('warning');
@@ -103,6 +139,12 @@ const FileSender = () => {
       setStatus('Connection lost during file transfer.');
       setStatusType('error');
       setIsTransferring(false);
+      
+      // Abort the transfer
+      if (transferAbortController.current) {
+        transferAbortController.current.abort();
+        transferAbortController.current = null;
+      }
     } else {
       setStatus('Connection closed.');
       setStatusType('info');
@@ -122,7 +164,21 @@ const FileSender = () => {
     setStatusType('success');
   };
   
-  // Send the selected file
+  // Determine optimal chunk size based on file size
+  const getOptimalChunkSize = (fileSize) => {
+    // For very large files, increase chunk size to reduce total number of chunks
+    if (fileSize > 1024 * 1024 * 500) { // > 500MB
+      return 256 * 1024; // 256KB chunks
+    } else if (fileSize > 1024 * 1024 * 100) { // > 100MB
+      return 128 * 1024; // 128KB chunks
+    } else if (fileSize > 1024 * 1024 * 50) { // > 50MB
+      return 64 * 1024; // 64KB chunks
+    } else {
+      return 32 * 1024; // 32KB chunks for smaller files
+    }
+  };
+  
+  // Send the selected file with optimizations for large files
   const sendFile = async () => {
     if (!file || !isConnected) {
       setStatus('Connection not ready or no file selected');
@@ -131,8 +187,13 @@ const FileSender = () => {
     }
     
     try {
+      // Create abort controller for cancellation
+      transferAbortController.current = new AbortController();
+      const signal = transferAbortController.current.signal;
+      
       setIsTransferring(true);
-      setProgress(0);
+      resetTransfer();
+      startTransfer();
       
       // If encryption is enabled, send the encryption key and IV first
       if (isEncrypted && encryptionKey.current) {
@@ -157,13 +218,24 @@ const FileSender = () => {
         encrypted: isEncrypted
       });
       
+      // Determine optimal chunk size based on file size
+      const chunkSize = optimizeForLargeFiles ? getOptimalChunkSize(file.size) : 16 * 1024;
+      
       // Read and send the file in chunks
-      const chunkSize = 16384; // 16KB chunks
       let offset = 0;
       
+      // Function to send the next chunk with dynamic pacing
       const sendNextChunk = async () => {
+        // Check for abort signal
+        if (signal.aborted) {
+          setStatus('Transfer canceled.');
+          setStatusType('warning');
+          setIsTransferring(false);
+          return;
+        }
+        
         if (offset >= file.size) {
-          // Transfer complete
+          // Transfer complete, send completion message
           webRTCService.sendMessage({
             type: 'transfer-complete',
             name: file.name,
@@ -171,15 +243,19 @@ const FileSender = () => {
             encrypted: isEncrypted
           });
           
-          setStatus(`Sent ${file.name} successfully!`);
-          setStatusType('success');
-          setIsTransferring(false);
+          // Update progress to 100%
+          completeTransfer();
           return;
         }
         
         try {
+          // Determine how many chunks to read and send in one batch
+          // This helps with large files by reducing the overhead of reading small chunks
+          const remainingBytes = file.size - offset;
+          const bytesToRead = Math.min(remainingBytes, chunkSize);
+          
           // Read chunk from file
-          const chunk = await readFileChunk(file, offset, chunkSize);
+          const chunk = await readFileChunk(file, offset, bytesToRead);
           
           // Encrypt chunk if encryption is enabled
           let dataToSend = chunk;
@@ -209,13 +285,23 @@ const FileSender = () => {
           }
           
           // Update offset and progress
-          offset += chunk.byteLength;
-          const percentage = Math.floor((offset / file.size) * 100);
-          setProgress(percentage);
-          setStatus(`Sending ${file.name}: ${percentage}%`);
+          offset += bytesToRead;
+          updateProgress(bytesToRead);
           
-          // Schedule the next chunk
-          setTimeout(sendNextChunk, 0);
+          // For very large files, adjust the sending rate to avoid overwhelming the connection
+          // This introduces a small delay between chunks for smoother transfers
+          if (file.size > 100 * 1024 * 1024) { // Over 100MB
+            // Calculate delay based on network conditions (using a basic heuristic)
+            // This simulates a kind of flow control
+            const delayMs = transferSpeed > 1024 * 1024 ? 0 : 5; // If speed < 1MB/s, add small delay
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+          }
+          
+          // Schedule the next chunk using requestAnimationFrame for better performance
+          // This helps prevent UI blocking in browsers
+          requestAnimationFrame(() => {
+            setTimeout(sendNextChunk, 0);
+          });
         } catch (error) {
           console.error("Error sending chunk:", error);
           setStatus('Error sending file: ' + error.message);
@@ -233,6 +319,36 @@ const FileSender = () => {
       setStatusType('error');
       setIsTransferring(false);
     }
+  };
+  
+  // Cancel an in-progress transfer
+  const cancelTransfer = () => {
+    if (transferAbortController.current) {
+      transferAbortController.current.abort();
+      transferAbortController.current = null;
+    }
+    
+    setIsTransferring(false);
+    setStatus('Transfer canceled.');
+    setStatusType('warning');
+  };
+  
+  // Render transfer stats if a transfer is in progress
+  const renderTransferStats = () => {
+    if (!isTransferring || !file) return null;
+    
+    return (
+      <div className="transfer-stats mt-2 mb-4 p-3 bg-blue-50 rounded border border-blue-200">
+        <div className="flex justify-between mb-1">
+          <span className="text-sm font-medium">Transfer Speed:</span>
+          <span className="text-sm">{formatSpeed()}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-sm font-medium">Estimated Time:</span>
+          <span className="text-sm">{formatTimeRemaining()}</span>
+        </div>
+      </div>
+    );
   };
   
   return (
@@ -291,6 +407,23 @@ const FileSender = () => {
         )}
       </div>
       
+      <div className="form-group mb-6">
+        <label className="checkbox-container">
+          <input
+            type="checkbox"
+            checked={optimizeForLargeFiles}
+            onChange={() => setOptimizeForLargeFiles(!optimizeForLargeFiles)}
+            disabled={isTransferring}
+          />
+          <span>Optimize for large files</span>
+        </label>
+        {optimizeForLargeFiles && (
+          <p className="text-sm text-gray mt-1">
+            Improved performance for files over 50MB
+          </p>
+        )}
+      </div>
+      
       {isConnected && (
         <div className="connection-status mb-4">
           <div className="status-dot status-dot-connected"></div>
@@ -298,42 +431,36 @@ const FileSender = () => {
         </div>
       )}
       
-      <button
-        className="btn btn-primary btn-block"
-        onClick={sendFile}
-        disabled={!file || !isConnected || isTransferring}
-      >
-        {isTransferring ? 'Sending...' : 'Send File'}
-      </button>
+      {isTransferring ? (
+        <button
+          className="btn btn-danger btn-block"
+          onClick={cancelTransfer}
+        >
+          Cancel Transfer
+        </button>
+      ) : (
+        <button
+          className="btn btn-primary btn-block"
+          onClick={sendFile}
+          disabled={!file || !isConnected}
+        >
+          Send File
+        </button>
+      )}
       
       {progress > 0 && (
-        <div className="progress-container">
-          <div 
-            className={`progress-bar ${progress < 100 ? 'progress-bar-blue' : 'progress-bar-green'}`}
-            style={{ width: `${progress}%` }}
-          ></div>
-          <div className="progress-text">{progress}%</div>
+        <div className="mt-4">
+          <ProgressBar 
+            progress={progress} 
+            animated={progress < 100}
+          />
         </div>
       )}
       
+      {renderTransferStats()}
+      
       {status && (
-        <div className={`status-message status-${statusType}`}>
-          <svg className="status-message-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            {statusType === 'success' && (
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-            )}
-            {statusType === 'error' && (
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            )}
-            {statusType === 'warning' && (
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-            )}
-            {statusType === 'info' && (
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            )}
-          </svg>
-          <p>{status}</p>
-        </div>
+        <StatusMessage status={status} type={statusType} />
       )}
     </div>
   );
